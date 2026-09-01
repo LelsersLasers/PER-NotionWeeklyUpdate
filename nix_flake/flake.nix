@@ -17,6 +17,8 @@
           (python.withPackages (ps: with ps; [
             notion-client
           ]))
+
+          pkgs.mypy
         ];
       };
     };
