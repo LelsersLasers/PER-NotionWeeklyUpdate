@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 
 import argparse
+import csv
 import re
+import tempfile
+import zipfile
 from datetime import date, datetime, timedelta
-
-
-def parse_date(value: str, year: int) -> date:
-    value = re.sub(r"<br\s*/?>", "", value, flags=re.IGNORECASE).strip()
-    return datetime.strptime(f"{value} {year}", "%b %d %Y").date()
+from pathlib import Path
 
 
 def clean_markdown(value: str) -> str:
+    """Remove basic Markdown/HTML formatting from a cell."""
     value = value.strip()
 
     value = re.sub(r"<br\s*/?>", "", value, flags=re.IGNORECASE)
@@ -20,6 +20,7 @@ def clean_markdown(value: str) -> str:
 
 
 def slack_owner(name: str) -> str:
+    """Convert comma-separated owner names to @mentions."""
     name = clean_markdown(name)
 
     if not name or name in {"-", "<br>"}:
@@ -34,66 +35,146 @@ def slack_owner(name: str) -> str:
     return ", ".join(f"@{owner}" for owner in owners)
 
 
-def parse_table(text: str):
+def parse_date(value: str, year: int) -> date:
+    """Parse a deadline such as 'Sep 5'."""
+    value = clean_markdown(value)
+    return datetime.strptime(
+        f"{value} {year}",
+        "%b %d %Y",
+    ).date()
+
+
+def find_project_board_csv(root: Path) -> Path:
+    """
+    Find the Project Board CSV we actually care about.
+
+    Notion exports both:
+        Project Board <id>.csv
+        Project Board <id>_all.csv
+
+    We want the former.
+    """
+    candidates = []
+
+    for path in root.rglob("*.csv"):
+        if path.name.endswith("_all.csv"):
+            continue
+
+        if path.name.startswith("Project Board ") and path.name.endswith(".csv"):
+            candidates.append(path)
+
+    if not candidates:
+        raise FileNotFoundError(
+            "Could not find the Project Board CSV in the extracted archive."
+        )
+
+    if len(candidates) > 1:
+        raise RuntimeError(
+            "Found multiple possible Project Board CSV files:\n"
+            + "\n".join(f"  {path}" for path in candidates)
+        )
+
+    return candidates[0]
+
+
+def extract_zip(zip_path: Path, destination: Path) -> None:
+    """Safely extract a ZIP archive."""
+    with zipfile.ZipFile(zip_path, "r") as archive:
+        archive.extractall(destination)
+
+
+def extract_nested_export(outer_zip: Path, temp_dir: Path) -> Path:
+    """
+    Extract the Notion export structure:
+
+        outer.zip
+          └── inner.zip
+                └── Private & Shared/
+                      └── Project Board ....csv
+
+    Returns the path to the desired CSV.
+    """
+    outer_dir = temp_dir / "outer"
+    outer_dir.mkdir()
+
+    extract_zip(outer_zip, outer_dir)
+
+    # Find the nested ZIP without assuming its filename.
+    nested_zips = list(outer_dir.rglob("*.zip"))
+
+    if not nested_zips:
+        raise FileNotFoundError(
+            "No nested ZIP archive found inside the outer ZIP."
+        )
+
+    if len(nested_zips) > 1:
+        raise RuntimeError(
+            "Found multiple nested ZIP archives:\n"
+            + "\n".join(f"  {path}" for path in nested_zips)
+        )
+
+    inner_zip = nested_zips[0]
+
+    inner_dir = temp_dir / "inner"
+    inner_dir.mkdir()
+
+    extract_zip(inner_zip, inner_dir)
+
+    return find_project_board_csv(inner_dir)
+
+
+def parse_tasks(csv_path: Path):
+    """Read tasks from the Project Board CSV."""
     tasks = []
 
-    for line in text.splitlines():
-        line = line.strip()
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
 
-        if not line.startswith("|"):
-            continue
+        required_columns = {
+            "Name",
+            "Deadline",
+            "Owner",
+        }
 
-        cells = [
-            cell.strip()
-            for cell in line.strip("|").split("|")
-        ]
+        if not required_columns.issubset(reader.fieldnames or set()):
+            raise ValueError(
+                "CSV is missing required columns. "
+                f"Expected at least: {', '.join(sorted(required_columns))}\n"
+                f"Found: {', '.join(reader.fieldnames or [])}"
+            )
 
-        if len(cells) < 7:
-            continue
+        for row in reader:
+            name = clean_markdown(row["Name"])
+            owner = clean_markdown(row["Owner"])
+            deadline = clean_markdown(row["Deadline"])
 
-        # Skip header
-        if cells[0].lower() == "name":
-            continue
+            if not name or not deadline:
+                continue
 
-        # Skip separator
-        if re.fullmatch(r"[-: ]+", cells[0]):
-            continue
-
-        name, project, team, status, priority, owner, deadline = cells[:7]
-
-        name = clean_markdown(name)
-        owner = clean_markdown(owner)
-
-        if not deadline:
-            continue
-
-        tasks.append({
-            "name": name,
-            "owner": owner,
-            "deadline": deadline,
-        })
+            tasks.append({
+                "name": name,
+                "owner": owner,
+                "deadline": deadline,
+            })
 
     return tasks
 
 
-def generate_slack(text: str, today: date | None = None) -> str:
+def generate_slack(tasks, today: date | None = None) -> str:
+    """Generate the Slack-formatted task list."""
     if today is None:
         today = date.today()
 
-    year = today.year
-
-    # Sunday at the end of the current week.
+    # Monday = 0 ... Sunday = 6
     days_until_sunday = 6 - today.weekday()
     sunday = today + timedelta(days=days_until_sunday)
-
-    tasks = parse_table(text)
 
     due_this_week = []
     upcoming = []
 
     for task in tasks:
         try:
-            deadline = parse_date(task["deadline"], year)
+            deadline = parse_date(task["deadline"], today.year)
         except ValueError:
             print(
                 f"Warning: could not parse deadline "
@@ -106,8 +187,8 @@ def generate_slack(text: str, today: date | None = None) -> str:
         else:
             upcoming.append((deadline, task))
 
-    due_this_week.sort(key=lambda x: x[0])
-    upcoming.sort(key=lambda x: x[0])
+    due_this_week.sort(key=lambda item: item[0])
+    upcoming.sort(key=lambda item: item[0])
 
     output = [
         "*due this week*",
@@ -143,20 +224,40 @@ def generate_slack(text: str, today: date | None = None) -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert a task Markdown table into Slack-formatted deadlines."
+        description=(
+            "Extract a Notion Project Board export and generate "
+            "a Slack-formatted task list."
+        )
     )
 
     parser.add_argument(
-        "csv",
-        help="Path to the CSV file containing the tasks",
+        "zip",
+        type=Path,
+        help="Path to the outer Notion export ZIP",
     )
 
     args = parser.parse_args()
 
-    with open(args.csv, "r", encoding="utf-8") as f:
-        table = f.read()
+    if not args.zip.is_file():
+        parser.error(f"ZIP file does not exist: {args.zip}")
 
-    print(generate_slack(table))
+    if not zipfile.is_zipfile(args.zip):
+        parser.error(f"File is not a valid ZIP archive: {args.zip}")
+
+    # Everything created during extraction lives inside this directory.
+    # It is automatically deleted when the block exits, including when
+    # an exception is raised.
+    with tempfile.TemporaryDirectory(prefix="project-board-") as temp:
+        temp_dir = Path(temp)
+
+        csv_path = extract_nested_export(
+            args.zip,
+            temp_dir,
+        )
+
+        tasks = parse_tasks(csv_path)
+
+        print(generate_slack(tasks))
 
 
 if __name__ == "__main__":
