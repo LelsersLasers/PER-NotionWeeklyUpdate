@@ -148,7 +148,7 @@ def parse_tasks(csv_path: Path):
             owner = clean_markdown(row["Owner"])
             deadline = clean_markdown(row["Deadline"])
 
-            if not name or not deadline:
+            if not name:
                 continue
 
             tasks.append({
@@ -171,14 +171,28 @@ def generate_slack(tasks, today: date | None = None) -> str:
 
     due_this_week = []
     upcoming = []
+    requiring_owner = []
 
     for task in tasks:
+        owner = clean_markdown(task["owner"])
+        deadline_value = clean_markdown(task["deadline"])
+
+        # No owner -> put it in its own section regardless of deadline.
+        if not owner or owner in {"-", "<br>"}:
+            requiring_owner.append(task)
+            continue
+
+        # No deadline, but has an owner -> don't put it into either
+        # date-based section.
+        if not deadline_value:
+            continue
+
         try:
-            deadline = parse_date(task["deadline"], today.year)
+            deadline = parse_date(deadline_value, today.year)
         except ValueError:
             print(
                 f"Warning: could not parse deadline "
-                f"{task['deadline']!r} for {task['name']!r}"
+                f"{deadline_value!r} for {task['name']!r}"
             )
             continue
 
@@ -189,6 +203,7 @@ def generate_slack(tasks, today: date | None = None) -> str:
 
     due_this_week.sort(key=lambda item: item[0])
     upcoming.sort(key=lambda item: item[0])
+    requiring_owner.sort(key=lambda task: task["name"].lower())
 
     output = [
         "*Active/Assigned:*",
@@ -197,10 +212,9 @@ def generate_slack(tasks, today: date | None = None) -> str:
 
     for deadline, task in due_this_week:
         owner = slack_owner(task["owner"])
-        owner_text = f": {owner}" if owner else ""
 
         output.append(
-            f"• {task['name']}{owner_text} "
+            f"• {task['name']}: {owner} "
             f"*({deadline.strftime('%b %-d')})*"
         )
 
@@ -211,11 +225,20 @@ def generate_slack(tasks, today: date | None = None) -> str:
 
     for deadline, task in upcoming:
         owner = slack_owner(task["owner"])
-        owner_text = f": {owner}" if owner else ""
 
         output.append(
-            f"• {task['name']}{owner_text} "
+            f"• {task['name']}: {owner} "
             f"*({deadline.strftime('%b %-d')})*"
+        )
+
+    output.extend([
+        "",
+        "Requiring owner:",
+    ])
+
+    for task in requiring_owner:
+        output.append(
+            f"• {task['name']}: *OWNER REQUIRED*"
         )
 
     return "\n".join(output)
