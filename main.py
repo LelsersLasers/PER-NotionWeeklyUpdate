@@ -32,7 +32,7 @@ def slack_owner(name: str) -> str:
         if owner.strip()
     ]
 
-    return ", ".join(f"@{owner}" for owner in owners)
+    return " ".join(f"@{owner}" for owner in owners)
 
 
 def parse_date(value: str, year: int) -> date:
@@ -191,8 +191,8 @@ def generate_slack(tasks, today: date | None = None) -> str:
     upcoming.sort(key=lambda item: item[0])
 
     output = [
-        "*due this week*",
-        "",
+        "*Active/Assigned:*",
+        "This week",
     ]
 
     for deadline, task in due_this_week:
@@ -200,14 +200,13 @@ def generate_slack(tasks, today: date | None = None) -> str:
         owner_text = f": {owner}" if owner else ""
 
         output.append(
-            f"- {task['name']}{owner_text} "
+            f"• {task['name']}{owner_text} "
             f"*({deadline.strftime('%b %-d')})*"
         )
 
     output.extend([
         "",
-        "*upcoming*",
-        "",
+        "Upcoming:",
     ])
 
     for deadline, task in upcoming:
@@ -215,7 +214,7 @@ def generate_slack(tasks, today: date | None = None) -> str:
         owner_text = f": {owner}" if owner else ""
 
         output.append(
-            f"- {task['name']}{owner_text} "
+            f"• {task['name']}{owner_text} "
             f"*({deadline.strftime('%b %-d')})*"
         )
 
