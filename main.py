@@ -1,69 +1,61 @@
 #!/usr/bin/env python3
 
+import argparse
 import re
-import sys
 from datetime import date, datetime, timedelta
 
 
 def parse_date(value: str, year: int) -> date:
-    """Parse dates like 'Sep 5' using the supplied year."""
     value = re.sub(r"<br\s*/?>", "", value, flags=re.IGNORECASE).strip()
-
-    # Handle dates such as "Sep 5"
     return datetime.strptime(f"{value} {year}", "%b %d %Y").date()
 
 
 def clean_markdown(value: str) -> str:
-    """Remove basic Markdown/HTML formatting from a table cell."""
     value = value.strip()
 
-    # Remove HTML breaks
     value = re.sub(r"<br\s*/?>", "", value, flags=re.IGNORECASE)
-
-    # Convert [text](url) -> text
     value = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", value)
 
     return value.strip()
 
 
 def slack_owner(name: str) -> str:
-    """
-    Convert an owner string into Slack-friendly @ mentions.
-
-    Example:
-        'Amruth Nadimpally, Aditya Saini'
-        -> '@Amruth Nadimpally, @Aditya Saini'
-    """
     name = clean_markdown(name)
 
     if not name or name in {"-", "<br>"}:
         return ""
 
-    owners = [owner.strip() for owner in name.split(",") if owner.strip()]
+    owners = [
+        owner.strip()
+        for owner in name.split(",")
+        if owner.strip()
+    ]
 
     return ", ".join(f"@{owner}" for owner in owners)
 
 
 def parse_table(text: str):
-    """Parse rows from a Markdown table."""
     tasks = []
 
     for line in text.splitlines():
         line = line.strip()
 
-        # Only process actual table rows
         if not line.startswith("|"):
             continue
 
-        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        cells = [
+            cell.strip()
+            for cell in line.strip("|").split("|")
+        ]
 
-        # Skip header/separator rows
         if len(cells) < 7:
             continue
 
+        # Skip header
         if cells[0].lower() == "name":
             continue
 
+        # Skip separator
         if re.fullmatch(r"[-: ]+", cells[0]):
             continue
 
@@ -90,14 +82,9 @@ def generate_slack(text: str, today: date | None = None) -> str:
 
     year = today.year
 
-    # Sunday of the current week.
-    #
-    # Python:
-    #   Monday = 0
-    #   ...
-    #   Sunday = 6
+    # Sunday at the end of the current week.
     days_until_sunday = 6 - today.weekday()
-    next_sunday = today + timedelta(days=days_until_sunday)
+    sunday = today + timedelta(days=days_until_sunday)
 
     tasks = parse_table(text)
 
@@ -110,68 +97,67 @@ def generate_slack(text: str, today: date | None = None) -> str:
         except ValueError:
             print(
                 f"Warning: could not parse deadline "
-                f"{task['deadline']!r} for {task['name']!r}",
-                file=sys.stderr,
+                f"{task['deadline']!r} for {task['name']!r}"
             )
             continue
 
-        # If a deadline has already passed this year, don't accidentally
-        # classify it as an upcoming task.
-        if deadline <= next_sunday:
+        if deadline <= sunday:
             due_this_week.append((deadline, task))
         else:
             upcoming.append((deadline, task))
 
-    # Sort chronologically
     due_this_week.sort(key=lambda x: x[0])
     upcoming.sort(key=lambda x: x[0])
 
-    output = []
-
-    output.append("*due this week*")
-    output.append("")
+    output = [
+        "*due this week*",
+        "",
+    ]
 
     for deadline, task in due_this_week:
         owner = slack_owner(task["owner"])
-
         owner_text = f": {owner}" if owner else ""
 
         output.append(
             f"- {task['name']}{owner_text} "
-            f"*(Sep {deadline.day})*"
+            f"*({deadline.strftime('%b %-d')})*"
         )
 
-    output.append("")
-    output.append("*upcoming*")
-    output.append("")
+    output.extend([
+        "",
+        "*upcoming*",
+        "",
+    ])
 
     for deadline, task in upcoming:
         owner = slack_owner(task["owner"])
-
         owner_text = f": {owner}" if owner else ""
 
         output.append(
             f"- {task['name']}{owner_text} "
-            f"*(Sep {deadline.day})*"
+            f"*({deadline.strftime('%b %-d')})*"
         )
 
     return "\n".join(output)
 
 
-if __name__ == "__main__":
-    # Usage:
-    #
-    #   python3 tasks.py < tasks.md
-    #
-    # or:
-    #
-    #   python3 tasks.py tasks.md
-    #
+def main():
+    parser = argparse.ArgumentParser(
+        description="Convert a task Markdown table into Slack-formatted deadlines."
+    )
 
-    if len(sys.argv) > 1:
-        with open(sys.argv[1], "r", encoding="utf-8") as f:
-            table = f.read()
-    else:
-        table = sys.stdin.read()
+    parser.add_argument(
+        "csv",
+        help="Path to the CSV file containing the tasks",
+    )
+
+    args = parser.parse_args()
+
+    with open(args.csv, "r", encoding="utf-8") as f:
+        table = f.read()
 
     print(generate_slack(table))
+
+
+if __name__ == "__main__":
+    main()
