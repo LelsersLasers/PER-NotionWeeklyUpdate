@@ -1,2 +1,3 @@
 # PER-NotionWeeklyUpdate
-Format a Slack message based on the Notion Project Board export
+
+A simple script for me to use to format a Slack message based on the Notion Project Board
