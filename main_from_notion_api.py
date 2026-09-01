@@ -9,6 +9,7 @@ NOTION_DATABASE_ID
 import argparse
 import os
 from datetime import date, timedelta
+from dotenv import load_dotenv
 
 from notion_client import Client
 from notion_client.helpers import iterate_paginated_api
@@ -200,6 +201,8 @@ def generate_slack(tasks: list[dict], today: date | None = None) -> str:
 
 
 def main():
+    load_dotenv()
+
     parser = argparse.ArgumentParser(
         description="Generate a Slack task summary from a Notion Project Board."
     )

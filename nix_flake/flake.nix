@@ -16,6 +16,7 @@
         packages = [
           (python.withPackages (ps: with ps; [
             notion-client
+            python-dotenv
           ]))
 
           pkgs.mypy
