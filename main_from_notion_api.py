@@ -7,8 +7,12 @@ NOTION_DATABASE_ID
 """
 
 import argparse
+import json
 import os
+import sys
 from datetime import date, timedelta
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 from notion_client import Client
@@ -97,12 +101,23 @@ def get_tasks(notion: Client, data_source_id: str) -> list[dict]:
     return tasks
 
 
-def format_owners(owners: list[str]) -> str:
-    return " ".join(f"@{owner}" for owner in owners)
+def map_name(name: str, mapping: dict[str, str]) -> str:
+    """Look up a Notion name in the mapping (case-insensitive).
+
+    Returns the mapped Slack name if found, otherwise returns the
+    original Notion name unchanged.
+    """
+    return mapping.get(name.lower(), name)
 
 
-def format_task(task: dict, include_deadline: bool = True) -> list[str]:
-    owners = format_owners(task["owners"])
+def format_owners(owners: list[str], mapping: dict[str, str]) -> str:
+    return " ".join(f"@{map_name(owner, mapping)}" for owner in owners)
+
+
+def format_task(
+    task: dict, mapping: dict[str, str], include_deadline: bool = True
+) -> list[str]:
+    owners = format_owners(task["owners"], mapping)
     owner_text = f": {owners}" if owners else ""
 
     if include_deadline and task["deadline"] is not None:
@@ -121,7 +136,11 @@ def format_task(task: dict, include_deadline: bool = True) -> list[str]:
     return lines
 
 
-def generate_slack(tasks: list[dict], today: date | None = None) -> str:
+def generate_slack(
+    tasks: list[dict],
+    mapping: dict[str, str],
+    today: date | None = None,
+) -> str:
     if today is None:
         today = date.today()
 
@@ -172,7 +191,7 @@ def generate_slack(tasks: list[dict], today: date | None = None) -> str:
     ]
 
     for task in due_this_week:
-        output.extend(format_task(task))
+        output.extend(format_task(task, mapping))
 
     output.extend([
         "",
@@ -180,7 +199,7 @@ def generate_slack(tasks: list[dict], today: date | None = None) -> str:
     ])
 
     for task in upcoming:
-        output.extend(format_task(task))
+        output.extend(format_task(task, mapping))
 
     output.extend([
         "",
@@ -237,12 +256,26 @@ def main():
 
     notion = Client(auth=args.token)
 
+    mapping_path = Path(__file__).parent / "name_mapping.json"
+
+    try:
+        raw = json.loads(mapping_path.read_text())
+    except FileNotFoundError:
+        print(f"Error: {mapping_path} not found.", file=sys.stderr)
+        sys.exit(1)
+    except json.JSONDecodeError as exc:
+        print(f"Error: {mapping_path} is not valid JSON: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    # Normalize keys to lowercase for case-insensitive lookup.
+    mapping = {k.lower(): v for k, v in raw.items()}
+
     tasks = get_tasks(
         notion,
         args.data_source_id,
     )
 
-    print(generate_slack(tasks))
+    print(generate_slack(tasks, mapping))
 
 
 if __name__ == "__main__":
