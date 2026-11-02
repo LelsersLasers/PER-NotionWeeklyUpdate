@@ -18,7 +18,6 @@ from dotenv import load_dotenv
 from notion_client import Client
 from notion_client.helpers import iterate_paginated_api
 
-ALLOWED_TEAMS = {"Software", "Admin", "Controls"}
 DISALLOWED_STATUS = {"DONE", "CANCELED"}
 
 
@@ -84,9 +83,13 @@ def get_tasks(notion: Client, data_source_id: str) -> list[dict]:
         properties = page["properties"]
         
         teams = get_teams(properties, "Team")
+        owners = get_people(properties, "Owner")
         status = get_status(properties, "Status")
 
-        if (not teams & ALLOWED_TEAMS) or (status in DISALLOWED_STATUS):
+        if (
+            "Software" not in teams
+            and "Millan Kumar" not in owners
+        ) or (status in DISALLOWED_STATUS):
             continue
 
         tasks.append({
